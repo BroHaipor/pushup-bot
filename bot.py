@@ -15,7 +15,6 @@ from telegram.ext import (
     ConversationHandler,
 )
 
-from keep_alive import keep_alive
 
 # ─── Logging ────────────────────────────────────────────────────────────────
 
@@ -342,7 +341,6 @@ def build_application() -> Application:
 
 
 def main() -> None:
-    keep_alive()
     logger.info("Starting bot...")
     app = build_application()
     app.run_polling(allowed_updates=Update.ALL_TYPES)
