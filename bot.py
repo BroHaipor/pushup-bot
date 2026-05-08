@@ -178,16 +178,16 @@ def build_top_text(users: list[dict]) -> str:
 
     total = sum(u["pushups"] for u in users)
     medals = {1: "🥇", 2: "🥈", 3: "🥉"}
-    lines = [f"<b>🏆 Топ участников</b>\n💪 Всего отжиманий: <b>{total}</b>\n"]
+    lines = [f"<b>Топ участников</b>\n💪 Всего отжиманий: <b>{total}</b>\n"]
 
     for rank, user in enumerate(users, start=1):
         medal = medals.get(rank, f"{rank}.")
         lines.append(
             f"{medal} <b>{user['name']}</b> — {user['pushups']} отж.\n"
-            f"    📅 {format_date(user['last_updated'])}"
+            f"    {format_date(user['last_updated'])}"
         )
 
-    return "\n".join(lines)
+    return "\n\n".join(lines)
 
 
 def build_profile_text(user: dict, rank: int) -> str:
