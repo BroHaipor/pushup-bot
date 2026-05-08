@@ -176,8 +176,9 @@ def build_top_text(users: list[dict]) -> str:
     if not users:
         return "Пока никого нет 😴"
 
+    total = sum(u["pushups"] for u in users)
     medals = {1: "🥇", 2: "🥈", 3: "🥉"}
-    lines = ["<b>🏆 Топ участников</b>\n"]
+    lines = [f"<b>🏆 Топ участников</b>\n💪 Всего отжиманий: <b>{total}</b>\n"]
 
     for rank, user in enumerate(users, start=1):
         medal = medals.get(rank, f"{rank}.")
