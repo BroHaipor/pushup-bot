@@ -41,7 +41,8 @@ WAITING_IDEA_TEXT = 3
 # ─── Database ─────────────────────────────────────────────────────────────────
 
 def get_connection():
-    return psycopg.connect(DATABASE_URL, row_factory=dict_row)
+    url = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+    return psycopg.connect(url, row_factory=dict_row)
 
 
 def init_db():
