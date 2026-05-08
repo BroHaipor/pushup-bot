@@ -7,10 +7,9 @@
 
 import os
 from datetime import datetime, timezone, timedelta
-import psycopg2
+import psycopg
 
 DATABASE_URL = os.environ["DATABASE_URL"]
-
 KYIV_TZ = timezone(timedelta(hours=3))
 
 USERS = [
@@ -26,19 +25,18 @@ USERS = [
 def seed():
     now = datetime.now(KYIV_TZ)
 
-    with psycopg2.connect(DATABASE_URL, sslmode="require") as conn:
-        with conn.cursor() as cur:
-            for user_id, name, pushups in USERS:
-                cur.execute("""
-                    INSERT INTO users (user_id, name, pushups, last_updated, joined_at)
-                    VALUES (%s, %s, %s, %s, %s)
-                    ON CONFLICT (user_id) DO UPDATE
-                        SET name     = EXCLUDED.name,
-                            pushups  = EXCLUDED.pushups
-                """, (user_id, name, pushups, now, now))
-                print(f"  ✓ {name} ({user_id}) — {pushups} отж.")
-
+    with psycopg.connect(DATABASE_URL) as conn:
+        for user_id, name, pushups in USERS:
+            conn.execute("""
+                INSERT INTO users (user_id, name, pushups, last_updated, joined_at)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (user_id) DO UPDATE
+                    SET name     = EXCLUDED.name,
+                        pushups  = EXCLUDED.pushups
+            """, (user_id, name, pushups, now, now))
+            print(f"  ✓ {name} ({user_id}) — {pushups} отж.")
         conn.commit()
+
     print("\nГотово! Все участники добавлены.")
 
 

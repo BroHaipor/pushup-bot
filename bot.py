@@ -4,8 +4,7 @@ import logging
 from datetime import datetime, timezone, timedelta
 from io import BytesIO
 
-import psycopg2
-import psycopg2.extras
+import psycopg
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -30,7 +29,6 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 DATABASE_URL = os.environ["DATABASE_URL"]
 
-# Твой Telegram ID — только ты можешь использовать /backup
 ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
 IDEA_CHAT_ID = -5142351517
 KYIV_TZ = timezone(timedelta(hours=3))
@@ -42,92 +40,88 @@ WAITING_IDEA_TEXT = 3
 # ─── Database ─────────────────────────────────────────────────────────────────
 
 def get_connection():
-    return psycopg2.connect(DATABASE_URL, sslmode="require")
+    return psycopg.connect(DATABASE_URL)
 
 
 def init_db():
     """Создаёт таблицу если её нет. Безопасно вызывать при каждом старте."""
     with get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS users (
-                    user_id      BIGINT PRIMARY KEY,
-                    name         TEXT NOT NULL,
-                    pushups      INTEGER NOT NULL DEFAULT 0,
-                    last_updated TIMESTAMPTZ,
-                    joined_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
-                )
-            """)
-            cur.execute("""
-                ALTER TABLE users
-                ADD COLUMN IF NOT EXISTS joined_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                user_id      BIGINT PRIMARY KEY,
+                name         TEXT NOT NULL,
+                pushups      INTEGER NOT NULL DEFAULT 0,
+                last_updated TIMESTAMPTZ,
+                joined_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        conn.execute("""
+            ALTER TABLE users
+            ADD COLUMN IF NOT EXISTS joined_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        """)
         conn.commit()
     logger.info("Database ready.")
 
 
 def db_get_or_create_user(user_id: int, telegram_name: str) -> dict:
     with get_connection() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("SELECT * FROM users WHERE user_id = %s", (user_id,))
-            row = cur.fetchone()
-            if row:
-                return dict(row)
-            cur.execute(
-                "INSERT INTO users (user_id, name, pushups) VALUES (%s, %s, 0) RETURNING *",
-                (user_id, telegram_name),
-            )
-            conn.commit()
-            return dict(cur.fetchone())
+        row = conn.execute(
+            "SELECT * FROM users WHERE user_id = %s", (user_id,)
+        ).fetchone()
+        if row:
+            return dict(row)
+        row = conn.execute(
+            "INSERT INTO users (user_id, name, pushups) VALUES (%s, %s, 0) RETURNING *",
+            (user_id, telegram_name),
+        ).fetchone()
+        conn.commit()
+        return dict(row)
 
 
 def db_get_user(user_id: int) -> dict | None:
     with get_connection() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("SELECT * FROM users WHERE user_id = %s", (user_id,))
-            row = cur.fetchone()
-            return dict(row) if row else None
+        row = conn.execute(
+            "SELECT * FROM users WHERE user_id = %s", (user_id,)
+        ).fetchone()
+        return dict(row) if row else None
 
 
 def db_update_pushups(user_id: int, new_pushups: int):
     with get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "UPDATE users SET pushups = %s, last_updated = %s WHERE user_id = %s",
-                (new_pushups, datetime.now(KYIV_TZ), user_id),
-            )
+        conn.execute(
+            "UPDATE users SET pushups = %s, last_updated = %s WHERE user_id = %s",
+            (new_pushups, datetime.now(KYIV_TZ), user_id),
+        )
         conn.commit()
 
 
 def db_update_name(user_id: int, new_name: str):
     with get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "UPDATE users SET name = %s WHERE user_id = %s",
-                (new_name, user_id),
-            )
+        conn.execute(
+            "UPDATE users SET name = %s WHERE user_id = %s",
+            (new_name, user_id),
+        )
         conn.commit()
 
 
 def db_get_all_users() -> list[dict]:
     with get_connection() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("SELECT * FROM users ORDER BY pushups DESC")
-            return [dict(row) for row in cur.fetchall()]
+        rows = conn.execute(
+            "SELECT * FROM users ORDER BY pushups DESC"
+        ).fetchall()
+        return [dict(row) for row in rows]
 
 
 def db_get_user_rank(user_id: int) -> int:
     with get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                SELECT rank FROM (
-                    SELECT user_id, RANK() OVER (ORDER BY pushups DESC) AS rank
-                    FROM users
-                ) ranked
-                WHERE user_id = %s
-            """, (user_id,))
-            row = cur.fetchone()
-            return row[0] if row else 0
+        row = conn.execute("""
+            SELECT rank FROM (
+                SELECT user_id, RANK() OVER (ORDER BY pushups DESC) AS rank
+                FROM users
+            ) ranked
+            WHERE user_id = %s
+        """, (user_id,)).fetchone()
+        return row["rank"] if row else 0
 
 
 # ─── Keyboards ────────────────────────────────────────────────────────────────
@@ -171,6 +165,8 @@ def format_date(dt) -> str:
         return "никогда"
     if isinstance(dt, str):
         dt = datetime.fromisoformat(dt)
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(KYIV_TZ)
     return dt.strftime("%d.%m.%Y %H:%M")
 
 
@@ -222,10 +218,11 @@ async def cmd_backup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     users = db_get_all_users()
 
-    # Сериализуем datetime в строку для JSON
     for user in users:
         if user.get("last_updated"):
             user["last_updated"] = user["last_updated"].isoformat()
+        if user.get("joined_at"):
+            user["joined_at"] = user["joined_at"].isoformat()
 
     json_bytes = json.dumps(users, ensure_ascii=False, indent=2).encode("utf-8")
     file = BytesIO(json_bytes)
