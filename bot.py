@@ -5,6 +5,7 @@ from datetime import datetime, timezone, timedelta
 from io import BytesIO
 
 import psycopg
+from psycopg.rows import dict_row
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -40,7 +41,7 @@ WAITING_IDEA_TEXT = 3
 # ─── Database ─────────────────────────────────────────────────────────────────
 
 def get_connection():
-    return psycopg.connect(DATABASE_URL)
+    return psycopg.connect(DATABASE_URL, row_factory=dict_row)
 
 
 def init_db():
