@@ -184,7 +184,7 @@ def build_top_text(users: list[dict]) -> str:
         medal = medals.get(rank, f"{rank}.")
         lines.append(
             f"{medal} <b>{user['name']}</b> — {user['pushups']} отж.\n"
-            f"        {format_date(user['last_updated'])}"
+            f"{format_date(user['last_updated'])}"
         )
 
     return "\n\n".join(lines)
