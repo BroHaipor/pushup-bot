@@ -234,7 +234,7 @@ def build_top_text(users: list[dict]) -> str:
             f"{format_date(user['last_updated'])}"
         )
 
-    return "\n".join(lines)
+    return "\n\n".join(lines)
 
 
 def build_profile_text(user: dict, rank: int) -> str:
