@@ -1,7 +1,7 @@
 import os
 import json
 import logging
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, date
 from io import BytesIO
 
 import psycopg
@@ -46,7 +46,7 @@ def get_connection():
 
 
 def init_db():
-    """Создаёт таблицу если её нет. Безопасно вызывать при каждом старте."""
+    """Создаёт таблицы если их нет. Безопасно вызывать при каждом старте."""
     with get_connection() as conn:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS users (
@@ -60,6 +60,19 @@ def init_db():
         conn.execute("""
             ALTER TABLE users
             ADD COLUMN IF NOT EXISTS joined_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS pushup_history (
+                id         SERIAL PRIMARY KEY,
+                user_id    BIGINT NOT NULL REFERENCES users(user_id),
+                amount     INTEGER NOT NULL,
+                day        DATE NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_history_user_day
+            ON pushup_history(user_id, day)
         """)
         conn.commit()
     logger.info("Database ready.")
@@ -88,11 +101,19 @@ def db_get_user(user_id: int) -> dict | None:
         return dict(row) if row else None
 
 
-def db_update_pushups(user_id: int, new_pushups: int):
+def db_update_pushups(user_id: int, new_pushups: int, delta: int):
+    """Обновляет общий счёт и пишет запись в историю."""
+    now = datetime.now(KYIV_TZ)
+    today = now.date()
     with get_connection() as conn:
         conn.execute(
             "UPDATE users SET pushups = %s, last_updated = %s WHERE user_id = %s",
-            (new_pushups, datetime.now(KYIV_TZ), user_id),
+            (new_pushups, now, user_id),
+        )
+        # Записываем изменение в историю (delta может быть отрицательным)
+        conn.execute(
+            "INSERT INTO pushup_history (user_id, amount, day) VALUES (%s, %s, %s)",
+            (user_id, delta, today),
         )
         conn.commit()
 
@@ -126,6 +147,20 @@ def db_get_user_rank(user_id: int) -> int:
         return row["rank"] if row else 0
 
 
+def db_get_history(user_id: int, days: int) -> dict[date, int]:
+    """Возвращает {дата: сумма за день} за последние N дней."""
+    since = datetime.now(KYIV_TZ).date() - timedelta(days=days - 1)
+    with get_connection() as conn:
+        rows = conn.execute("""
+            SELECT day, SUM(amount) as total
+            FROM pushup_history
+            WHERE user_id = %s AND day >= %s
+            GROUP BY day
+            ORDER BY day
+        """, (user_id, since)).fetchall()
+    return {row["day"]: row["total"] for row in rows}
+
+
 # ─── Keyboards ────────────────────────────────────────────────────────────────
 
 def main_menu_keyboard() -> InlineKeyboardMarkup:
@@ -149,8 +184,20 @@ def edit_pushups_keyboard() -> InlineKeyboardMarkup:
 
 def profile_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📊 Статистика", callback_data="stats_menu")],
         [InlineKeyboardButton("✏️ Изменить имя", callback_data="change_name")],
         [InlineKeyboardButton("« Назад", callback_data="main_menu")],
+    ])
+
+
+def stats_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("7 дней", callback_data="stats_7"),
+            InlineKeyboardButton("1 месяц", callback_data="stats_30"),
+            InlineKeyboardButton("3 месяца", callback_data="stats_90"),
+        ],
+        [InlineKeyboardButton("« Назад", callback_data="profile")],
     ])
 
 
@@ -178,16 +225,16 @@ def build_top_text(users: list[dict]) -> str:
 
     total = sum(u["pushups"] for u in users)
     medals = {1: "🥇", 2: "🥈", 3: "🥉"}
-    lines = [f"<b>Топ участников</b>\n💪 Всего отжиманий: <b>{total}</b>\n"]
+    lines = [f"<b>🏆 Топ участников</b>\n💪 Всего отжиманий: <b>{total}</b>\n"]
 
     for rank, user in enumerate(users, start=1):
         medal = medals.get(rank, f"{rank}.")
         lines.append(
             f"{medal} <b>{user['name']}</b> — {user['pushups']} отж.\n"
-            f"{format_date(user['last_updated'])}"
+            f"    📅 {format_date(user['last_updated'])}"
         )
 
-    return "\n\n".join(lines)
+    return "\n".join(lines)
 
 
 def build_profile_text(user: dict, rank: int) -> str:
@@ -199,6 +246,27 @@ def build_profile_text(user: dict, rank: int) -> str:
         f"Дата старта: <b>{format_date(user.get('joined_at'))}</b>\n"
         f"Последнее обновление: <b>{format_date(user['last_updated'])}</b>"
     )
+
+
+def build_stats_text(user: dict, days: int, history: dict[date, int]) -> str:
+    labels = {7: "7 дней", 30: "1 месяц", 90: "3 месяца"}
+    today = datetime.now(KYIV_TZ).date()
+    lines = [f"📊 <b>Статистика за {labels[days]}</b> — {user['name']}\n"]
+
+    total_period = 0
+    for i in range(days - 1, -1, -1):
+        day = today - timedelta(days=i)
+        amount = history.get(day)
+        label = day.strftime("%d.%m")
+        if amount is not None:
+            sign = "+" if amount >= 0 else ""
+            lines.append(f"{label}  {sign}{amount} отж.")
+            total_period += amount
+        else:
+            lines.append(f"{label}  —")
+
+    lines.append(f"\n<b>Итого за период: {total_period} отж.</b>")
+    return "\n".join(lines)
 
 
 # ─── Handlers ────────────────────────────────────────────────────────────────
@@ -267,6 +335,32 @@ async def callback_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     )
 
 
+async def callback_stats_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+
+    await query.edit_message_text(
+        "📊 Выбери период:",
+        reply_markup=stats_keyboard(),
+    )
+
+
+async def callback_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+
+    days = int(query.data.split("_")[1])
+    tg_user = update.effective_user
+    user = db_get_or_create_user(tg_user.id, tg_user.first_name)
+    history = db_get_history(tg_user.id, days)
+
+    await query.edit_message_text(
+        build_stats_text(user, days, history),
+        reply_markup=stats_keyboard(),
+        parse_mode="HTML",
+    )
+
+
 async def callback_edit_pushups(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
@@ -307,12 +401,15 @@ async def receive_pushups_amount(update: Update, context: ContextTypes.DEFAULT_T
 
     if action == "pushups_add":
         new_total = user["pushups"] + amount
+        delta = amount
         verb = f"➕ Добавлено <b>{amount}</b> отжиманий"
     else:
-        new_total = max(0, user["pushups"] - amount)
-        verb = f"➖ Убрано <b>{amount}</b> отжиманий"
+        actual = min(amount, user["pushups"])
+        new_total = user["pushups"] - actual
+        delta = -actual
+        verb = f"➖ Убрано <b>{actual}</b> отжиманий"
 
-    db_update_pushups(tg_user.id, new_total)
+    db_update_pushups(tg_user.id, new_total, delta)
 
     await update.message.reply_text(
         f"{verb}\nВсего: <b>{new_total}</b> 💪",
@@ -445,6 +542,8 @@ def build_application() -> Application:
     app.add_handler(CallbackQueryHandler(callback_main_menu, pattern="^main_menu$"))
     app.add_handler(CallbackQueryHandler(callback_top, pattern="^top$"))
     app.add_handler(CallbackQueryHandler(callback_profile, pattern="^profile$"))
+    app.add_handler(CallbackQueryHandler(callback_stats_menu, pattern="^stats_menu$"))
+    app.add_handler(CallbackQueryHandler(callback_stats, pattern="^stats_(7|30|90)$"))
     app.add_handler(CallbackQueryHandler(callback_edit_pushups, pattern="^edit_pushups$"))
 
     return app
