@@ -237,7 +237,7 @@ async def cmd_backup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 async def callback_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
-    await query.edit_message_text("Главное меню:", reply_markup=main_menu_keyboard())
+    await query.edit_message_text("Главное меню:\n🔖 v1.1 — добавлена статистика по дням", reply_markup=main_menu_keyboard())
 
 
 async def callback_top(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -386,7 +386,7 @@ async def receive_idea_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 async def cancel_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
-    await query.edit_message_text("Главное меню:", reply_markup=main_menu_keyboard())
+    await query.edit_message_text("Главное меню:\n🔖 v1.1 — добавлена статистика по дням", reply_markup=main_menu_keyboard())
     return ConversationHandler.END
 
 
